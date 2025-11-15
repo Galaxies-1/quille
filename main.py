@@ -1,204 +1,134 @@
-from flask import Flask, request, render_template_string, session
+from flask import Flask, request, render_template_string
 import requests
 import re
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key_123"
 
-
-# -------------------------
-# Extract lesson ID
-# -------------------------
+# Function to extract lesson ID from URL
 def get_url_params(url):
     match = re.search(r'/lesson/([^?#/]+)', url)
     if match:
         return {'id': match.group(1)}
     return {'id': None}
 
-
-# -------------------------
-# Fetch responses
-# -------------------------
+# Fetch responses for each question
 def fetch_responses(questions):
     responses = []
     for question in questions:
-        question_id = question['key']
+        qid = question['key']
         try:
-            response_url = f"https://cms.quill.org/questions/{question_id}/responses"
-            response = requests.get(response_url)
-            data = response.json()
-
+            resp = requests.get(f"https://cms.quill.org/questions/{qid}/responses")
+            data = resp.json()
             if isinstance(data, list) and data:
                 responses.append(data[0].get("text", "Error fetching response"))
             else:
                 responses.append("Error fetching response")
-
         except:
             responses.append("Error fetching response")
-
     return responses
 
-
-# -------------------------
-# Fetch lesson JSON
-# -------------------------
+# Fetch lesson data
 def fetch_lesson_data(url):
     params = get_url_params(url)
     lesson_id = params.get('id')
+    if not lesson_id:
+        return [], []
 
-    if lesson_id:
+    try:
         json_url = f"https://www.quill.org/api/v1/lessons/{lesson_id}.json"
-        try:
-            response = requests.get(json_url)
-            data = response.json()
-            questions = data.get("questions", [])
-            responses = fetch_responses(questions)
-            return questions, responses
-        except:
-            return [], []
+        response = requests.get(json_url)
+        data = response.json()
 
-    return [], []
+        questions = data.get("questions", [])
+        responses = fetch_responses(questions)
+        return questions, responses
+    except Exception as e:
+        print("Error:", e)
+        return [], []
 
 
-# -------------------------
-# HTML TEMPLATE
-# -------------------------
-HTML = """
+# ------------------ FLASK WEB UI ------------------
+
+PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Quille</title>
+    <title>Quille Web</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: radial-gradient(circle at top, #1b1b1b, #0d0d0d);
-            color: #f1f1f1;
-            margin: 0;
-            padding: 0;
-        }
-        .box {
-            max-width: 650px;
-            margin: 60px auto;
-            background: #151515;
-            padding: 30px;
-            border-radius: 14px;
-            box-shadow: 0 0 20px #000, inset 0 0 10px #222;
-        }
-        h2 {
-            text-align: center;
-            margin-bottom: 25px;
-            font-weight: 600;
-            letter-spacing: 1px;
-        }
-        label { font-size: 14px; opacity: 0.9; }
-        input, select, textarea, button {
-            width: 100%;
-            padding: 12px;
-            margin-top: 6px;
-            margin-bottom: 18px;
-            border-radius: 8px;
-            font-size: 15px;
-        }
-        input, select, textarea {
-            border: 1px solid #333;
-            background: #1e1e1e;
-            color: #eee;
-        }
-        button {
-            background: #7c3cff;
-            color: white;
-            border: none;
-            cursor: pointer;
-            font-weight: bold;
-            transition: 0.2s;
-        }
-        button:hover {
-            background: #692ed6;
-        }
-        textarea {
-            height: 160px;
-            resize: vertical;
-        }
+        body { font-family: Arial; padding: 20px; max-width: 800px; margin: auto; }
+        textarea { width: 100%; height: 150px; }
+        select { width: 100%; padding: 8px; }
+        button { padding: 10px; margin-top: 10px; width: 100%; }
     </style>
 </head>
 <body>
 
-<div class="box">
-    <h2>Quille</h2>
+    <h2>Quille - Web Version</h2>
 
     <form method="POST">
-        <label>Quill Lesson URL</label>
-        <input type="text" name="url" value="{{ url }}">
+        <label>Enter Quill Lesson URL:</label><br>
+        <input type="text" name="lesson_url" style="width:100%;" value="{{ url }}"><br><br>
 
-        <button type="submit" name="action" value="load">Load Lesson</button>
-
-        {% if questions %}
-            <label>Select Question</label>
-            <select name="index">
-                {% for q in questions %}
-                    <option value="{{ loop.index0 }}" {% if selected_index == loop.index0 %}selected{% endif %}>
-                        {{ loop.index }} - {{ q }}
-                    </option>
-                {% endfor %}
-            </select>
-
-            <button type="submit" name="action" value="show">Show Answer</button>
-        {% endif %}
+        <button type="submit">Load Lesson</button>
     </form>
 
-    {% if answer %}
-        <label>Answer</label>
-        <textarea readonly>{{ answer }}</textarea>
+    {% if questions %}
+    <hr>
+    <h3>Select a Question:</h3>
+
+    <form method="POST">
+        <input type="hidden" name="lesson_url" value="{{ url }}">
+
+        <select name="qindex">
+            {% for i, q in enumerate(questions) %}
+            <option value="{{ i }}" {% if i == selected %}selected{% endif %}>
+                {{ i+1 }} - {{ q.key }}
+            </option>
+            {% endfor %}
+        </select>
+
+        <button type="submit">Show Answer</button>
+    </form>
     {% endif %}
-</div>
+
+    {% if answer %}
+    <hr>
+    <h3>Answer:</h3>
+    <textarea readonly>{{ answer }}</textarea>
+    {% endif %}
 
 </body>
 </html>
 """
 
 
-# -------------------------
-# Main Route
-# -------------------------
 @app.route("/", methods=["GET", "POST"])
-def index():
-    url = session.get("url", "")
-    questions = session.get("questions", [])
-    responses = session.get("responses", [])
-    selected_index = 0
+def home():
+    url = ""
+    questions = []
+    responses = []
     answer = ""
+    selected = 0
 
     if request.method == "POST":
-        action = request.form.get("action")
-        url = request.form.get("url", url)
+        url = request.form.get("lesson_url", "")
 
-        # Load lesson
-        if action == "load" and url:
-            qs, rs = fetch_lesson_data(url)
-            questions = [q["key"] for q in qs]
+        questions, responses = fetch_lesson_data(url)
 
-            # Save to session
-            session["questions"] = questions
-            session["responses"] = rs
-            session["url"] = url
-
-        # Show answer
-        elif action == "show":
-            questions = session.get("questions", [])
-            responses = session.get("responses", [])
-            selected_index = int(request.form.get("index", 0))
-
-            if responses:
-                answer = responses[selected_index]
+        if "qindex" in request.form:
+            selected = int(request.form.get("qindex"))
+            if selected < len(responses):
+                answer = responses[selected]
 
     return render_template_string(
-        HTML,
+        PAGE,
         url=url,
         questions=questions,
-        selected_index=selected_index,
-        answer=answer
+        responses=responses,
+        answer=answer,
+        selected=selected
     )
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=10000)
