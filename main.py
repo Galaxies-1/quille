@@ -4,14 +4,18 @@ import re
 
 app = Flask(__name__)
 
-# Function to extract lesson ID from URL
+# -----------------------------
+# Extract lesson ID from URL
+# -----------------------------
 def get_url_params(url):
     match = re.search(r'/lesson/([^?#/]+)', url)
     if match:
         return {'id': match.group(1)}
     return {'id': None}
 
+# -----------------------------
 # Fetch responses for each question
+# -----------------------------
 def fetch_responses(questions):
     responses = []
     for question in questions:
@@ -27,28 +31,32 @@ def fetch_responses(questions):
             responses.append("Error fetching response")
     return responses
 
-# Fetch lesson data
+# -----------------------------
+# Fetch lesson JSON
+# -----------------------------
 def fetch_lesson_data(url):
     params = get_url_params(url)
     lesson_id = params.get('id')
+
     if not lesson_id:
         return [], []
 
     try:
-        json_url = f"https://www.quill.org/api/v1/lessons/{lesson_id}.json"
-        response = requests.get(json_url)
-        data = response.json()
+        api_url = f"https://www.quill.org/api/v1/lessons/{lesson_id}.json"
+        resp = requests.get(api_url)
+        data = resp.json()
 
         questions = data.get("questions", [])
         responses = fetch_responses(questions)
         return questions, responses
     except Exception as e:
-        print("Error:", e)
+        print("ERROR fetch_lesson_data:", e)
         return [], []
 
 
-# ------------------ FLASK WEB UI ------------------
-
+# -----------------------------
+# HTML Template (no enumerate)
+# -----------------------------
 PAGE = """
 <!DOCTYPE html>
 <html>
@@ -80,9 +88,9 @@ PAGE = """
         <input type="hidden" name="lesson_url" value="{{ url }}">
 
         <select name="qindex">
-            {% for i, q in enumerate(questions) %}
+            {% for i, q in questions %}
             <option value="{{ i }}" {% if i == selected %}selected{% endif %}>
-                {{ i+1 }} - {{ q.key }}
+                {{ i + 1 }} - {{ q.key }}
             </option>
             {% endfor %}
         </select>
@@ -101,34 +109,47 @@ PAGE = """
 </html>
 """
 
-
+# -----------------------------
+# Flask Homepage Handler
+# -----------------------------
 @app.route("/", methods=["GET", "POST"])
 def home():
     url = ""
-    questions = []
+    questions_raw = []
     responses = []
     answer = ""
     selected = 0
+    indexed_questions = []
 
     if request.method == "POST":
         url = request.form.get("lesson_url", "")
 
-        questions, responses = fetch_lesson_data(url)
+        # Load questions & responses
+        questions_raw, responses = fetch_lesson_data(url)
 
-        if "qindex" in request.form:
+        # Create list of (index, question)
+        indexed_questions = list(enumerate(questions_raw))
+
+        # If user selected a question
+        if "qindex" in request.form and indexed_questions:
             selected = int(request.form.get("qindex"))
             if selected < len(responses):
                 answer = responses[selected]
+    else:
+        indexed_questions = []
 
     return render_template_string(
         PAGE,
         url=url,
-        questions=questions,
+        questions=indexed_questions,
         responses=responses,
         answer=answer,
         selected=selected
     )
 
 
+# -----------------------------
+# Run app on Render
+# -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
